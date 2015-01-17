@@ -307,11 +307,11 @@ def run_shark_benchmark(opts):
   slaves = map(str.strip, open(local_slaves_file).readlines())
 
   print "Restarting standalone scheduler..."
-  ssh_shark("/root/spark/bin/stop-all.sh")
+  ssh_shark("/root/ephemeral-hdfs/bin/stop-all.sh")
   ensure_spark_stopped_on_slaves(slaves)
   time.sleep(30)
-  ssh_shark("/root/spark/bin/stop-all.sh")
-  ssh_shark("/root/spark/bin/start-all.sh")
+  ssh_shark("/root/ephemeral-hdfs/bin/stop-all.sh")
+  ssh_shark("/root/ephemeral-hdfs/bin/start-all.sh")
   time.sleep(10)
 
   # Two modes here: Shark Mem and Shark Disk. If using Shark disk clear buffer
