@@ -44,10 +44,12 @@ def parse_args():
 
   parser.add_option("-m", "--impala", action="store_true", default=False,
       help="Whether to include Impala")
-  parser.add_option("-s", "--shark", action="store_true", default=False,
-      help="Whether to include Shark")
+  parser.add_option("-s", "--spark", action="store_true", default=False,
+      help="Whether to include Spark SQL")
   parser.add_option("-r", "--redshift", action="store_true", default=False,
       help="Whether to include Redshift")
+  parser.add_option("--shark", action="store_true", default=False,
+      help="Whether to include Shark")
   parser.add_option("--hive", action="store_true", default=False,
       help="Whether to include Hive")
   parser.add_option("--hive-tez", action="store_true", default=False,
@@ -57,10 +59,12 @@ def parse_args():
 
   parser.add_option("-a", "--impala-host",
       help="Hostname of Impala state store node")
-  parser.add_option("-b", "--shark-host",
-      help="Hostname of Shark master node")
+  parser.add_option("-b", "--spark-host",
+      help="Hostname of Spark master node")
   parser.add_option("-c", "--redshift-host",
       help="Hostname of Redshift ODBC endpoint")
+  parser.add_option("--shark-host",
+      help="Hostname of Shark master node")
   parser.add_option("--hive-host",
       help="Hostname of Hive master node")
   parser.add_option("--hive-slaves",
@@ -68,7 +72,9 @@ def parse_args():
 
   parser.add_option("-x", "--impala-identity-file",
       help="SSH private key file to use for logging into Impala node")
-  parser.add_option("-y", "--shark-identity-file",
+  parser.add_option("-y", "--spark-identity-file",
+      help="SSH private key file to use for logging into Spark node")
+  parser.add_option("--shark-identity-file",
       help="SSH private key file to use for logging into Shark node")
   parser.add_option("--hive-identity-file",
       help="SSH private key file to use for logging into Hive node")
@@ -95,7 +101,7 @@ def parse_args():
 
   (opts, args) = parser.parse_args()
 
-  if not (opts.impala or opts.shark or opts.redshift or opts.hive or opts.hive_tez or opts.hive_cdh):
+  if not (opts.impala or opts.spark or opts.shark or opts.redshift or opts.hive or opts.hive_tez or opts.hive_cdh):
     parser.print_help()
     sys.exit(1)
 
@@ -110,6 +116,14 @@ def parse_args():
                       opts.aws_key_id is None or
                       opts.aws_key is None):
     print >> stderr, "Impala requires identity file, hostname, and AWS creds"
+    sys.exit(1)
+
+  if opts.spark and (opts.spark_identity_file is None or
+                     opts.spark_host is None or
+                     opts.aws_key_id is None or
+                     opts.aws_key is None):
+    print >> stderr, \
+        "Spark SQL requires identity file, shark hostname, and AWS credentials"
     sys.exit(1)
 
   if opts.shark and (opts.shark_identity_file is None or
@@ -173,6 +187,99 @@ def add_aws_credentials(remote_host, remote_user, identity_file,
     print >> out, l
   out.close()
   scp_to(remote_host, identity_file, remote_user, local_xml, remote_xml_file)
+
+def prepare_spark_dataset(opts):
+  def ssh_spark(command):
+    command = "source /root/.bash_profile; %s" % command
+    ssh(opts.spark_host, "root", opts.spark_identity_file, command)
+
+  if not opts.skip_s3_import:
+    print "=== IMPORTING BENCHMARK DATA FROM S3 ==="
+    try:
+      ssh_spark("/root/ephemeral-hdfs/bin/hadoop fs -mkdir /user/spark/benchmark")
+    except Exception:
+      pass # Folder may already exist
+
+    add_aws_credentials(opts.spark_host, "root", opts.spark_identity_file,
+        "/root/ephemeral-hdfs/conf/core-site.xml", opts.aws_key_id, opts.aws_key)
+
+    ssh_spark("/root/ephemeral-hdfs/bin/start-mapred.sh")
+
+    ssh_spark(
+      "/root/ephemeral-hdfs/bin/hadoop distcp " \
+      "s3n://big-data-benchmark/pavlo/%s/%s/rankings/ " \
+      "/user/spark/benchmark/rankings/" % (opts.file_format, opts.data_prefix))
+
+    ssh_spark(
+      "/root/ephemeral-hdfs/bin/hadoop distcp " \
+      "s3n://big-data-benchmark/pavlo/%s/%s/uservisits/ " \
+      "/user/spark/benchmark/uservisits/" % (
+        opts.file_format, opts.data_prefix))
+
+    ssh_spark(
+      "/root/ephemeral-hdfs/bin/hadoop distcp " \
+      "s3n://big-data-benchmark/pavlo/%s/%s/crawl/ " \
+      "/user/spark/benchmark/crawl/" % (opts.file_format, opts.data_prefix))
+
+    # Scratch table used for JVM warmup
+    ssh_spark(
+      "/root/ephemeral-hdfs/bin/hadoop distcp /user/spark/benchmark/rankings " \
+      "/user/spark/benchmark/scratch"
+    )
+
+  print "=== CREATING HIVE TABLES FOR BENCHMARK ==="
+  hive_site = '''
+    <configuration>
+      <property>
+        <name>fs.default.name</name>
+        <value>hdfs://NAMENODE:9000</value>
+      </property>
+      <property>
+        <name>fs.defaultFS</name>
+        <value>hdfs://NAMENODE:9000</value>
+      </property>
+      <property>
+        <name>mapred.job.tracker</name>
+        <value>NONE</value>
+      </property>
+      <property>
+        <name>mapreduce.framework.name</name>
+        <value>NONE</value>
+      </property>
+    </configuration>
+    '''.replace("NAMENODE", opts.spark_host).replace('\n', '')
+
+  ssh_spark('echo "%s" > ~/ephemeral-hdfs/conf/hive-site.xml' % hive_site)
+
+  scp_to(opts.spark_host, opts.spark_identity_file, "root", "udf/url_count.py",
+      "/root/url_count.py")
+  ssh_spark("/root/spark-ec2/copy-dir /root/url_count.py")
+
+  ssh_spark(
+    "/root/spark/bin/spark-sql -e \"DROP TABLE IF EXISTS rankings; " \
+    "CREATE EXTERNAL TABLE rankings (pageURL STRING, pageRank INT, " \
+    "avgDuration INT) ROW FORMAT DELIMITED FIELDS TERMINATED BY \\\",\\\" " \
+    "STORED AS TEXTFILE LOCATION \\\"/user/spark/benchmark/rankings\\\";\"")
+
+  ssh_spark(
+    "/root/spark/bin/spark-sql -e \"DROP TABLE IF EXISTS scratch; " \
+    "CREATE EXTERNAL TABLE scratch (pageURL STRING, pageRank INT, " \
+    "avgDuration INT) ROW FORMAT DELIMITED FIELDS TERMINATED BY \\\",\\\" " \
+    "STORED AS TEXTFILE LOCATION \\\"/user/spark/benchmark/scratch\\\";\"")
+
+  ssh_spark(
+    "/root/spark/bin/spark-sql -e \"DROP TABLE IF EXISTS uservisits; " \
+    "CREATE EXTERNAL TABLE uservisits (sourceIP STRING,destURL STRING," \
+    "visitDate STRING,adRevenue DOUBLE,userAgent STRING,countryCode STRING," \
+    "languageCode STRING,searchWord STRING,duration INT ) " \
+    "ROW FORMAT DELIMITED FIELDS TERMINATED BY \\\",\\\" " \
+    "STORED AS TEXTFILE LOCATION \\\"/user/spark/benchmark/uservisits\\\";\"")
+
+  ssh_spark("/root/spark/bin/spark-sql -e \"DROP TABLE IF EXISTS documents; " \
+    "CREATE EXTERNAL TABLE documents (line STRING) STORED AS TEXTFILE " \
+    "LOCATION \\\"/user/spark/benchmark/crawl\\\";\"")
+
+  print "=== FINISHED CREATING BENCHMARK DATA ==="
 
 def prepare_shark_dataset(opts):
   def ssh_shark(command):
@@ -581,10 +688,12 @@ def main():
 
   if opts.impala:
     prepare_impala_dataset(opts)
-  if opts.shark:
-    prepare_shark_dataset(opts)
+  if opts.spark:
+    prepare_spark_dataset(opts)
   if opts.redshift:
     prepare_redshift_dataset(opts)
+  if opts.shark:
+    prepare_shark_dataset(opts)
   if opts.hive:
     prepare_hive_dataset(opts)
   if opts.hive_tez:
