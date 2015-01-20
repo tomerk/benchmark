@@ -190,8 +190,8 @@ def parse_args():
       default=False, help="Disable caching in Shark")
   parser.add_option("--impala-use-hive", action="store_true",
       default=False, help="Use Hive for query executio on Impala nodes")
-  parser.add_option("-t", "--reduce-tasks", type="int", default=150,
-      help="Number of reduce tasks in Shark")
+  parser.add_option("-t", "--reduce-tasks", type="int", default=200,
+      help="Number of reduce tasks in Shark & Spark SQL")
   parser.add_option("-z", "--clear-buffer-cache", action="store_true",
       default=False, help="Clear disk buffer cache between query runs")
 
@@ -305,28 +305,13 @@ def run_spark_benchmark(opts):
 
   prefix = str(time.time()).split(".")[0]
   query_file_name = "%s_workload.sh" % prefix
-  slaves_file_name = "%s_slaves" % prefix
   local_query_file = os.path.join(LOCAL_TMP_DIR, query_file_name)
-  local_slaves_file = os.path.join(LOCAL_TMP_DIR, slaves_file_name)
   query_file = open(local_query_file, 'w')
   remote_result_file = "/mnt/%s_results" % prefix
   remote_tmp_file = "/mnt/%s_out" % prefix
   remote_query_file = "/mnt/%s" % query_file_name
 
-  runner = "/root/spark/bin/spark-sql"
-
-  print "Getting Slave List"
-  scp_from(opts.spark_host, opts.spark_identity_file, "root",
-           "/root/spark-ec2/slaves", local_slaves_file)
-  slaves = map(str.strip, open(local_slaves_file).readlines())
-
-  print "Restarting standalone scheduler..."
-  ssh_spark("/root/ephemeral-hdfs/bin/stop-all.sh")
-  ensure_spark_stopped_on_slaves(slaves)
-  time.sleep(30)
-  ssh_spark("/root/ephemeral-hdfs/bin/stop-all.sh")
-  ssh_spark("/root/ephemeral-hdfs/bin/start-all.sh")
-  time.sleep(10)
+  runner = "/root/spark/bin/beeline -u jdbc:hive2://localhost:10000 -n root"
 
   # Two modes here: Spark SQL Mem and Spark SQL Disk. If using Spark SQL disk use
   # uncached tables. If using Spark SQL Mem, used cached tables.
@@ -344,14 +329,11 @@ def run_spark_benchmark(opts):
       # Query 4 uses entirely different tables
       query_list += """
                     CACHE TABLE documents;
-                    SELECT COUNT(1) FROM documents;
                     """
     else:
       query_list += """
                     CACHE TABLE uservisits;
                     CACHE TABLE rankings;
-                    SELECT COUNT(1) FROM uservisits;
-                    SELECT COUNT(1) FROM rankings;
                     """
   else:
     # Uncache tables if necessary
@@ -382,10 +364,10 @@ def run_spark_benchmark(opts):
   print query_list.replace(';', ";\n")
 
   query_file.write(
-    "%s -e '%s' > %s 2>&1\n" % (runner, query_list, remote_tmp_file))
+    "%s %s > %s 2>&1\n" % (runner, " ".join("-e '%s'" % q.strip() for q in query_list.split(";") if q.strip()), remote_tmp_file))
 
   query_file.write(
-      "cat %s | grep Time | grep -v INFO |grep -v MapReduce >> %s\n" % (
+      "cat %s | grep seconds >> %s\n" % (
         remote_tmp_file, remote_result_file))
 
   query_file.close()
@@ -403,15 +385,13 @@ def run_spark_benchmark(opts):
   contents = []
 
   for i in range(opts.num_trials):
-    print "Stopping Executors on Slaves....."
-    ensure_spark_stopped_on_slaves(slaves)
     print "Query %s : Trial %i" % (opts.query_num, i+1)
     ssh_spark("%s" % remote_query_file)
     local_results_file = os.path.join(LOCAL_TMP_DIR, "%s_results" % prefix)
     scp_from(opts.spark_host, opts.spark_identity_file, "root",
         "/mnt/%s_results" % prefix, local_results_file)
     content = open(local_results_file).readlines()
-    all_times = map(lambda x: float(x.split(": ")[1].split(" ")[0]), content)
+    all_times = [float(x.split("(")[1].split(" ")[0]) for x in content]
 
     if '4' in opts.query_num:
       query_times = all_times[-4:]
@@ -434,7 +414,6 @@ def run_spark_benchmark(opts):
     ssh_spark("rm /mnt/%s_results" % prefix)
     os.remove(local_results_file)
 
-  os.remove(local_slaves_file)
   os.remove(local_query_file)
 
   return results, contents

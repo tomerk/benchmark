@@ -255,29 +255,39 @@ def prepare_spark_dataset(opts):
       "/root/url_count.py")
   ssh_spark("/root/spark-ec2/copy-dir /root/url_count.py")
 
-  ssh_spark(
-    "/root/spark/bin/spark-sql -e \"DROP TABLE IF EXISTS rankings; " \
+  ssh_spark("/root/spark/sbin/start-thriftserver.sh")
+
+  #TODO: Should keep checking to see if the JDBC server has started yet
+  print "Sleeping for 30 seconds so the jdbc server can start"
+  time.sleep(30)
+
+  def beeline(query):
+    ssh_spark("/root/spark/bin/beeline -u jdbc:hive2://localhost:10000 -n root -e \"%s\"" % query)
+
+  beeline("DROP TABLE IF EXISTS rankings")
+  beeline(
     "CREATE EXTERNAL TABLE rankings (pageURL STRING, pageRank INT, " \
     "avgDuration INT) ROW FORMAT DELIMITED FIELDS TERMINATED BY \\\",\\\" " \
-    "STORED AS TEXTFILE LOCATION \\\"/user/spark/benchmark/rankings\\\";\"")
+    "STORED AS TEXTFILE LOCATION \\\"/user/spark/benchmark/rankings\\\";")
 
-  ssh_spark(
-    "/root/spark/bin/spark-sql -e \"DROP TABLE IF EXISTS scratch; " \
+  beeline("DROP TABLE IF EXISTS scratch;")
+  beeline(
     "CREATE EXTERNAL TABLE scratch (pageURL STRING, pageRank INT, " \
     "avgDuration INT) ROW FORMAT DELIMITED FIELDS TERMINATED BY \\\",\\\" " \
-    "STORED AS TEXTFILE LOCATION \\\"/user/spark/benchmark/scratch\\\";\"")
+    "STORED AS TEXTFILE LOCATION \\\"/user/spark/benchmark/scratch\\\";")
 
-  ssh_spark(
-    "/root/spark/bin/spark-sql -e \"DROP TABLE IF EXISTS uservisits; " \
+  beeline("DROP TABLE IF EXISTS uservisits;")
+  beeline(
     "CREATE EXTERNAL TABLE uservisits (sourceIP STRING,destURL STRING," \
     "visitDate STRING,adRevenue DOUBLE,userAgent STRING,countryCode STRING," \
     "languageCode STRING,searchWord STRING,duration INT ) " \
     "ROW FORMAT DELIMITED FIELDS TERMINATED BY \\\",\\\" " \
-    "STORED AS TEXTFILE LOCATION \\\"/user/spark/benchmark/uservisits\\\";\"")
+    "STORED AS TEXTFILE LOCATION \\\"/user/spark/benchmark/uservisits\\\";")
 
-  ssh_spark("/root/spark/bin/spark-sql -e \"DROP TABLE IF EXISTS documents; " \
+  beeline("DROP TABLE IF EXISTS documents;")
+  beeline(
     "CREATE EXTERNAL TABLE documents (line STRING) STORED AS TEXTFILE " \
-    "LOCATION \\\"/user/spark/benchmark/crawl\\\";\"")
+    "LOCATION \\\"/user/spark/benchmark/crawl\\\";")
 
   print "=== FINISHED CREATING BENCHMARK DATA ==="
 
