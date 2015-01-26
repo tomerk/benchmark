@@ -226,6 +226,8 @@ def parse_args():
       help="Number of trials to run for this query")
   parser.add_option("--prefix", type="string", default="",
       help="Prefix result files with this string")
+  parser.add_option("--shark-mem", type="string", default="24g",
+      help="How much executor memory shark nodes should use")
 
   parser.add_option("-q", "--query-num", default="1a",
                     help="Which query to run in benchmark: " \
@@ -316,10 +318,7 @@ def run_spark_benchmark(opts):
   # Two modes here: Spark SQL Mem and Spark SQL Disk. If using Spark SQL disk use
   # uncached tables. If using Spark SQL Mem, used cached tables.
 
-  query_list = "set spark.sql.shuffle.partitions = %s;" % opts.reduce_tasks
-
-  # Throw away query for JVM warmup
-  query_list += "SELECT COUNT(*) FROM scratch;"
+  query_list = "set spark.sql.codegen=true; set spark.sql.shuffle.partitions = %s;" % opts.reduce_tasks
 
   # Create cached queries for Spark SQL Mem
   if not opts.spark_no_cache:
@@ -329,34 +328,23 @@ def run_spark_benchmark(opts):
       # Query 4 uses entirely different tables
       query_list += """
                     CACHE TABLE documents;
+                    SELECT COUNT(*) FROM documents
                     """
     else:
       query_list += """
                     CACHE TABLE uservisits;
                     CACHE TABLE rankings;
+                    SELECT COUNT(*) FROM uservisits;
+                    SELECT COUNT(*) FROM rankings;
                     """
-  else:
-    # Uncache tables if necessary
-    if '4' in opts.query_num:
-      # Query 4 uses entirely different tables
-      query_list += """
-                    UNCACHE TABLE documents;
-                    """
-    else:
-      query_list += """
-                    UNCACHE TABLE uservisits;
-                    UNCACHE TABLE rankings;
-                    """
-
-
-  # Warm up for Query 1
-  if '1' in opts.query_num:
-    query_list += "DROP TABLE IF EXISTS warmup;"
-    query_list += "CREATE TABLE warmup AS SELECT pageURL, pageRank FROM scratch WHERE pageRank > 1000;"
 
   if '4' not in opts.query_num:
     query_list += local_clean_query
   query_list += local_query_map[opts.query_num][0]
+
+  # Store the result only in mem
+  if not opts.spark_no_cache:
+    query_list = query_list.replace("CREATE TABLE", "CACHE TABLE")
 
   query_list = re.sub("\s\s+", " ", query_list.replace('\n', ' '))
 
@@ -428,28 +416,13 @@ def run_shark_benchmark(opts):
 
   prefix = str(time.time()).split(".")[0]
   query_file_name = "%s_workload.sh" % prefix
-  slaves_file_name = "%s_slaves" % prefix
   local_query_file = os.path.join(LOCAL_TMP_DIR, query_file_name)
-  local_slaves_file = os.path.join(LOCAL_TMP_DIR, slaves_file_name)
   query_file = open(local_query_file, 'w')
   remote_result_file = "/mnt/%s_results" % prefix
   remote_tmp_file = "/mnt/%s_out" % prefix
   remote_query_file = "/mnt/%s" % query_file_name
 
-  runner = "/root/shark/bin/shark-withinfo"
-
-  print "Getting Slave List"
-  scp_from(opts.shark_host, opts.shark_identity_file, "root",
-           "/root/spark-ec2/slaves", local_slaves_file)
-  slaves = map(str.strip, open(local_slaves_file).readlines())
-
-  print "Restarting standalone scheduler..."
-  ssh_shark("/root/ephemeral-hdfs/bin/stop-all.sh")
-  ensure_shark_stopped_on_slaves(slaves)
-  time.sleep(30)
-  ssh_shark("/root/ephemeral-hdfs/bin/stop-all.sh")
-  ssh_shark("/root/ephemeral-hdfs/bin/start-all.sh")
-  time.sleep(10)
+  runner = "export SPARK_MEM=%s; /root/shark/bin/shark" % opts.shark_mem
 
   # Two modes here: Shark Mem and Shark Disk. If using Shark disk clear buffer
   # cache in-between each query. If using Shark Mem, used cached tables.
@@ -522,8 +495,6 @@ def run_shark_benchmark(opts):
   contents = []
 
   for i in range(opts.num_trials):
-    print "Stopping Executors on Slaves....."
-    ensure_shark_stopped_on_slaves(slaves)
     print "Query %s : Trial %i" % (opts.query_num, i+1)
     ssh_shark("%s" % remote_query_file)
     local_results_file = os.path.join(LOCAL_TMP_DIR, "%s_results" % prefix)
@@ -553,7 +524,6 @@ def run_shark_benchmark(opts):
     ssh_shark("rm /mnt/%s_results" % prefix)
     os.remove(local_results_file)
 
-  os.remove(local_slaves_file)
   os.remove(local_query_file)
 
   return results, contents

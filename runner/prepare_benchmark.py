@@ -90,6 +90,8 @@ def parse_args():
   parser.add_option("-f", "--file-format", default="sequence-snappy",
       help="File format to copy (text, text-deflate, "\
            "sequence, or sequence-snappy)")
+  parser.add_option("--executor-memory", type="string", default="24G",
+      help="How much executor memory spark sql nodes should use")
 
   parser.add_option("-d", "--aws-key-id",
       help="Access key ID for AWS")
@@ -98,6 +100,8 @@ def parse_args():
 
   parser.add_option("--skip-s3-import", action="store_true", default=False,
       help="Assumes s3 data is already loaded")
+  parser.add_option("--parquet", action="store_true", default=False,
+      help="Convert benchmark data to parquet")
 
   (opts, args) = parser.parse_args()
 
@@ -221,12 +225,6 @@ def prepare_spark_dataset(opts):
       "s3n://big-data-benchmark/pavlo/%s/%s/crawl/ " \
       "/user/spark/benchmark/crawl/" % (opts.file_format, opts.data_prefix))
 
-    # Scratch table used for JVM warmup
-    ssh_spark(
-      "/root/ephemeral-hdfs/bin/hadoop distcp /user/spark/benchmark/rankings " \
-      "/user/spark/benchmark/scratch"
-    )
-
   print "=== CREATING HIVE TABLES FOR BENCHMARK ==="
   hive_site = '''
     <configuration>
@@ -255,7 +253,7 @@ def prepare_spark_dataset(opts):
       "/root/url_count.py")
   ssh_spark("/root/spark-ec2/copy-dir /root/url_count.py")
 
-  ssh_spark("/root/spark/sbin/start-thriftserver.sh")
+  ssh_spark("/root/spark/sbin/start-thriftserver.sh --executor-memory %s") % opts.executor_memory
 
   #TODO: Should keep checking to see if the JDBC server has started yet
   print "Sleeping for 30 seconds so the jdbc server can start"
@@ -270,12 +268,6 @@ def prepare_spark_dataset(opts):
     "avgDuration INT) ROW FORMAT DELIMITED FIELDS TERMINATED BY \\\",\\\" " \
     "STORED AS TEXTFILE LOCATION \\\"/user/spark/benchmark/rankings\\\";")
 
-  beeline("DROP TABLE IF EXISTS scratch;")
-  beeline(
-    "CREATE EXTERNAL TABLE scratch (pageURL STRING, pageRank INT, " \
-    "avgDuration INT) ROW FORMAT DELIMITED FIELDS TERMINATED BY \\\",\\\" " \
-    "STORED AS TEXTFILE LOCATION \\\"/user/spark/benchmark/scratch\\\";")
-
   beeline("DROP TABLE IF EXISTS uservisits;")
   beeline(
     "CREATE EXTERNAL TABLE uservisits (sourceIP STRING,destURL STRING," \
@@ -288,6 +280,40 @@ def prepare_spark_dataset(opts):
   beeline(
     "CREATE EXTERNAL TABLE documents (line STRING) STORED AS TEXTFILE " \
     "LOCATION \\\"/user/spark/benchmark/crawl\\\";")
+
+  if opts.parquet:
+    ssh_spark("/root/spark/sbin/stop-thriftserver.sh")
+
+    print "Sleeping for 30 seconds so the jdbc server can stop"
+    time.sleep(30)
+
+    scp_to(opts.spark_host, opts.spark_identity_file, "root", "parquet/convert_to_parquet.py",
+      "/root/convert_to_parquet.py")
+    ssh_spark("/root/spark/bin/spark-submit --master spark://%s:7077 /root/convert_to_parquet.py" % opts.spark_host)
+
+    ssh_spark("/root/spark/sbin/start-thriftserver.sh --executor-memory %s") % opts.executor_memory
+
+    print "Sleeping for 30 seconds so the jdbc server can start"
+    time.sleep(30)
+
+    beeline("DROP TABLE IF EXISTS rankings")
+    beeline(
+      "CREATE EXTERNAL TABLE rankings (pageURL STRING, pageRank INT, " \
+      "avgDuration INT) ROW FORMAT DELIMITED FIELDS TERMINATED BY \\\",\\\" " \
+      "STORED AS PARQUET LOCATION \\\"/user/spark/benchmark/rankings-parquet\\\";")
+
+    beeline("DROP TABLE IF EXISTS uservisits;")
+    beeline(
+      "CREATE EXTERNAL TABLE uservisits (sourceIP STRING,destURL STRING," \
+      "visitDate STRING,adRevenue DOUBLE,userAgent STRING,countryCode STRING," \
+      "languageCode STRING,searchWord STRING,duration INT ) " \
+      "ROW FORMAT DELIMITED FIELDS TERMINATED BY \\\",\\\" " \
+      "STORED AS PARQUET LOCATION \\\"/user/spark/benchmark/uservisits-parquet\\\";")
+
+    beeline("DROP TABLE IF EXISTS documents;")
+    beeline(
+      "CREATE EXTERNAL TABLE documents (line STRING) STORED AS PARQUET " \
+      "LOCATION \\\"/user/spark/benchmark/documents-parquet\\\";")
 
   print "=== FINISHED CREATING BENCHMARK DATA ==="
 
