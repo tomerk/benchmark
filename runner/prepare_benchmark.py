@@ -253,7 +253,7 @@ def prepare_spark_dataset(opts):
       "/root/url_count.py")
   ssh_spark("/root/spark-ec2/copy-dir /root/url_count.py")
 
-  ssh_spark("/root/spark/sbin/start-thriftserver.sh --executor-memory %s") % opts.executor_memory
+  ssh_spark("/root/spark/sbin/start-thriftserver.sh --executor-memory %s" % opts.executor_memory)
 
   #TODO: Should keep checking to see if the JDBC server has started yet
   print "Sleeping for 30 seconds so the jdbc server can start"
@@ -291,7 +291,7 @@ def prepare_spark_dataset(opts):
       "/root/convert_to_parquet.py")
     ssh_spark("/root/spark/bin/spark-submit --master spark://%s:7077 /root/convert_to_parquet.py" % opts.spark_host)
 
-    ssh_spark("/root/spark/sbin/start-thriftserver.sh --executor-memory %s") % opts.executor_memory
+    ssh_spark("/root/spark/sbin/start-thriftserver.sh --executor-memory %s" % opts.executor_memory)
 
     print "Sleeping for 30 seconds so the jdbc server can start"
     time.sleep(30)
