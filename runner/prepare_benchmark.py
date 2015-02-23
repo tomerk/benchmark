@@ -59,6 +59,8 @@ def parse_args():
 
   parser.add_option("-a", "--impala-host",
       help="Hostname of Impala state store node")
+  parser.add_option("--impala-data-node",
+      help="Hostname of an Impala data node. Required for Impala conversion to Parquet")
   parser.add_option("-b", "--spark-host",
       help="Hostname of Spark master node")
   parser.add_option("-c", "--redshift-host",
@@ -412,7 +414,7 @@ def prepare_shark_dataset(opts):
 
 def prepare_impala_dataset(opts):
   def ssh_impala(command):
-    ssh(opts.impala_host, "ubuntu", opts.impala_identity_file, command)
+    ssh(opts.impala_host, "root", opts.impala_identity_file, command)
 
   if not opts.skip_s3_import:
     print "=== IMPORTING BENCHMARK FROM S3 ==="
@@ -424,9 +426,9 @@ def prepare_impala_dataset(opts):
     ssh_impala("sudo chmod 777 /etc/hadoop/conf/hdfs-site.xml")
     ssh_impala("sudo chmod 777 /etc/hadoop/conf/core-site.xml")
 
-    add_aws_credentials(opts.impala_host, "ubuntu", opts.impala_identity_file,
+    add_aws_credentials(opts.impala_host, "root", opts.impala_identity_file,
         "/etc/hadoop/conf/hdfs-site.xml", opts.aws_key_id, opts.aws_key)
-    add_aws_credentials(opts.impala_host, "ubuntu", opts.impala_identity_file,
+    add_aws_credentials(opts.impala_host, "root", opts.impala_identity_file,
         "/etc/hadoop/conf/core-site.xml", opts.aws_key_id, opts.aws_key)
 
     ssh_impala(
@@ -462,6 +464,19 @@ def prepare_impala_dataset(opts):
     "pageRank INT, avgDuration INT) ROW FORMAT DELIMITED FIELDS " \
     "TERMINATED BY \\\"\\001\\\" " \
     "STORED AS SEQUENCEFILE LOCATION \\\"/tmp/benchmark/scratch\\\";\"")
+
+  if opts.parquet:
+    print "=== CONVERTING TABLES TO PARQUET ==="
+
+    ssh(opts.impala_data_node, "root", opts.impala_identity_file,
+      "impala-shell -r -q \"CREATE TABLE rankings_parquet STORED AS PARQUET AS SELECT * FROM rankings; " \
+      "DROP TABLE rankings; " \
+      "ALTER TABLE rankings_parquet RENAME TO rankings;\"")
+
+    ssh(opts.impala_data_node, "root", opts.impala_identity_file,
+      "impala-shell -r -q \"CREATE TABLE uservisits_parquet STORED AS PARQUET AS SELECT * FROM uservisits; " \
+      "DROP TABLE uservisits; " \
+      "ALTER TABLE uservisits_parquet RENAME TO uservisits;\"")
 
   print "=== FINISHED CREATING BENCHMARK DATA ==="
 

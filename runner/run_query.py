@@ -328,7 +328,7 @@ def run_spark_benchmark(opts):
       # Query 4 uses entirely different tables
       query_list += """
                     CACHE TABLE documents;
-                    SELECT COUNT(*) FROM documents
+                    SELECT COUNT(*) FROM documents;
                     """
     else:
       query_list += """
@@ -531,10 +531,10 @@ def run_shark_benchmark(opts):
 def run_impala_benchmark(opts):
   impala_host = opts.impala_hosts[0]
   def ssh_impala(command):
-    ssh(impala_host, "ubuntu", opts.impala_identity_file, command)
+    ssh(impala_host, "root", opts.impala_identity_file, command)
 
   def clear_buffer_cache_impala(host):
-    ssh(host, "ubuntu", opts.impala_identity_file,
+    ssh(host, "root", opts.impala_identity_file,
         "sudo bash -c \"sync && echo 3 > /proc/sys/vm/drop_caches\"")
 
   runner = "impala-shell -r -q"
@@ -548,7 +548,7 @@ def run_impala_benchmark(opts):
   remote_tmp_file = "/tmp/%s_tmp" % prefix
   remote_result_file = "/tmp/%s_results" % prefix
 
-  query_file.write("hive -e '%s'\n" % IMPALA_MAP[opts.query_num])
+  query_file.write("%s '%s'\n" % (runner, IMPALA_MAP[opts.query_num]))
   query = QUERY_MAP[opts.query_num][1]
 
   if '3c' in opts.query_num:
@@ -560,7 +560,6 @@ def run_impala_benchmark(opts):
 
   # Populate the full buffer cache if running Impala + cached
   if (not opts.impala_use_hive) and (not opts.clear_buffer_cache):
-    query = "set mem_limit=68g;" + query
     query = "select count(*) from rankings;" + query
     query = "select count(*) from uservisits;" + query
 
@@ -572,12 +571,12 @@ def run_impala_benchmark(opts):
       "%s '%s%s' > %s 2>&1;\n" % (runner, connect_stmt, query, remote_tmp_file))
   query_file.write("cat %s |egrep 'Inserted|Time' |grep -v MapReduce >> %s;\n" % (
       remote_tmp_file, remote_result_file))
-  query_file.write("hive -e '%s';\n" % CLEAN_QUERY)
+  query_file.write("%s '%s';\n" % (runner, CLEAN_QUERY))
   query_file.close()
 
   remote_query_file = "/tmp/%s" % query_file_name
   print >> stderr, "Copying files to Impala"
-  scp_to(impala_host, opts.impala_identity_file, "ubuntu",
+  scp_to(impala_host, opts.impala_identity_file, "root",
       local_query_file, remote_query_file)
   ssh_impala("chmod 775 %s" % remote_query_file)
 
@@ -593,7 +592,7 @@ def run_impala_benchmark(opts):
 
   # Collect results
   local_result_file = os.path.join(LOCAL_TMP_DIR, "%s_results" % prefix)
-  scp_from(impala_host, opts.impala_identity_file, "ubuntu",
+  scp_from(impala_host, opts.impala_identity_file, "root",
       remote_result_file, local_result_file)
   contents = open(local_result_file).readlines()
 
