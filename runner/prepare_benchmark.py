@@ -201,6 +201,9 @@ def prepare_spark_dataset(opts):
 
   if not opts.skip_s3_import:
     print "=== IMPORTING BENCHMARK DATA FROM S3 ==="
+
+    ssh_spark("/root/ephemeral-hdfs/sbin/start-all.sh")
+
     try:
       ssh_spark("/root/ephemeral-hdfs/bin/hadoop fs -mkdir /user/spark/benchmark")
     except Exception:
@@ -209,7 +212,6 @@ def prepare_spark_dataset(opts):
     add_aws_credentials(opts.spark_host, "root", opts.spark_identity_file,
         "/root/ephemeral-hdfs/conf/core-site.xml", opts.aws_key_id, opts.aws_key)
 
-    ssh_spark("/root/ephemeral-hdfs/bin/start-mapred.sh")
 
     ssh_spark(
       "/root/ephemeral-hdfs/bin/hadoop distcp " \
