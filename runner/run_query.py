@@ -318,7 +318,8 @@ def run_spark_benchmark(opts):
   # Two modes here: Spark SQL Mem and Spark SQL Disk. If using Spark SQL disk use
   # uncached tables. If using Spark SQL Mem, used cached tables.
 
-  query_list = "set spark.sql.codegen=true; set spark.sql.shuffle.partitions = %s;" % opts.reduce_tasks
+  #query_list = "set spark.sql.hive.convertCTAS=true; set spark.sql.parquet.compression.codec=snappy; set spark.sql.codegen=true; set spark.sql.shuffle.partitions = %s;" % opts.reduce_tasks
+  query_list = "set spark.sql.useSerializer2=true; set spark.sql.hive.convertCTAS=true; set spark.sql.parquet.compression.codec=snappy; set spark.sql.parquet.filterPushdown=true; set spark.sql.inMemoryColumnarStorage.partitionPruning=true; set spark.sql.codegen=true; set spark.sql.shuffle.partitions = %s;" % opts.reduce_tasks
 
   # Create cached queries for Spark SQL Mem
   if not opts.spark_no_cache:
